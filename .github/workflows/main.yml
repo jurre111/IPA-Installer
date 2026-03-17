@@ -1,0 +1,70 @@
+name: Xcode - Build
+
+on: 
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs: 
+      release__nightly:
+        description: Create a nightly release
+        type: boolean
+        required: false
+
+jobs:
+  build:
+    name: Build using xcodebuild command
+    runs-on: macos-latest
+    env:
+      scheme: IPA-Installer
+    outputs:
+      artifact: ${{ env.scheme }}.ipa
+    steps:
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.2'
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - name: Generate Xcode Project
+        run: |
+          if [ ! -f ${{ env.scheme }}.xcodeproj/project.pbxproj ]; then
+            brew install xcodegen
+            xcodegen generate --spec project.yml
+          fi
+      - name: Build app
+        run: |
+          chmod +x ./ipabuild.sh
+          ./ipabuild.sh
+      - name: Upload a Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.scheme }}.ipa
+          path: ${{ env.scheme }}.ipa
+
+  
+  release__nightly:
+    name: Nightly Release
+    permissions:
+      contents: write
+    if: inputs.release__nightly || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: [build]
+    concurrency:
+      group: release__nightly
+      cancel-in-progress: true
+
+    steps:
+      - name: Download a Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+      - name: Nightly Release
+        uses: andelf/nightly-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with: 
+          body: |
+            This is a nightly release [created automatically with GitHub Actions workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}).
+          files: |
+            ${{ needs.build.outputs.artifact }}
