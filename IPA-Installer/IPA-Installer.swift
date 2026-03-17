@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct IPA-InstallerApp: App {
+struct IPAInstallerApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

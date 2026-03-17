@@ -1,11 +1,17 @@
 import SwiftUI
 import Foundation
+#if os(iOS)
+import UIKit
+import UniformTypeIdentifiers
+#elseif os(macOS)
 import AppKit
+#endif
 
 struct ContentView: View {
     @State private var ipaURLString: String = ""
     @State private var statusMessage: String = ""
     @State private var manifestPath: String = ""
+    @State private var showPicker: Bool = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -46,11 +52,37 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundColor(.blue)
                     .onTapGesture {
+                        #if os(macOS)
                         NSWorkspace.shared.open(URL(fileURLWithPath: manifestPath))
+                        #else
+                        if let url = URL(string: manifestPath) ?? URL(fileURLWithPath: manifestPath) as URL? {
+                            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                        }
+                        #endif
                     }
             }
         }
         .padding()
+        .sheet(isPresented: $showPicker) {
+            #if os(iOS)
+            DocumentPicker(allowedTypes: [UTType(filenameExtension: "ipa")!]) { url in
+                showPicker = false
+                guard let url = url else { return }
+                // copy to documents and process
+                let dest = documentsDirectory().appendingPathComponent(url.lastPathComponent)
+                do {
+                    if FileManager.default.fileExists(atPath: dest.path) {
+                        try FileManager.default.removeItem(at: dest)
+                    }
+                    try FileManager.default.copyItem(at: url, to: dest)
+                    statusMessage = "Copied IPA to \(dest.path)"
+                    processIPA(at: dest)
+                } catch {
+                    statusMessage = "Failed to copy IPA: \(error.localizedDescription)"
+                }
+            }
+            #endif
+        }
     }
 
     // MARK: - Actions
@@ -70,6 +102,7 @@ struct ContentView: View {
     }
 
     private func pickLocalIPA() {
+        #if os(macOS)
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.init(filenameExtension: "ipa")!]
         panel.allowsMultipleSelection = false
@@ -92,6 +125,9 @@ struct ContentView: View {
                 statusMessage = "Failed to copy IPA: \(error.localizedDescription)"
             }
         }
+        #elseif os(iOS)
+        showPicker = true
+        #endif
     }
 
     // MARK: - Download
@@ -204,6 +240,42 @@ struct ContentView: View {
         return dir
     }
 }
+
+#if os(iOS)
+import SwiftUI
+
+struct DocumentPicker: UIViewControllerRepresentable {
+    let allowedTypes: [UTType]
+    let completion: (URL?) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let vc = UIDocumentPickerViewController(forOpeningContentTypes: allowedTypes, asCopy: true)
+        vc.delegate = context.coordinator
+        vc.allowsMultipleSelection = false
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let parent: DocumentPicker
+
+        init(_ parent: DocumentPicker) { self.parent = parent }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            parent.completion(urls.first)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            parent.completion(nil)
+        }
+    }
+}
+#endif
 
 #Preview {
     ContentView()
