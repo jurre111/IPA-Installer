@@ -210,11 +210,12 @@ struct ContentView: View {
         }
     }
 
-    // Extract Info.plist bytes from the IPA by using /usr/bin/unzip -p
+    // Extract Info.plist bytes from the IPA.
     private func extractInfoPlist(fromIPA ipaURL: URL) -> Data? {
+#if os(macOS)
+        // Use system unzip on macOS for simplicity
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-        // Use pattern to match Payload/*.app/Info.plist
         process.arguments = ["-p", ipaURL.path, "Payload/*.app/Info.plist"]
         let out = Pipe()
         process.standardOutput = out
@@ -228,7 +229,74 @@ struct ContentView: View {
         } catch {
             return nil
         }
-    }
+#else
+        // Minimal ZIP parsing to find Payload/*.app/Info.plist inside the IPA (ZIP) file.
+        // Supports stored (0) and deflate (8) compression.
+        import Compression
+
+        guard let fileData = try? Data(contentsOf: ipaURL) else { return nil }
+        var offset = 0
+        let dataCount = fileData.count
+
+        func readUInt32(_ off: Int) -> UInt32 {
+            let sub = fileData.subdata(in: off..<(off+4))
+            return UInt32(littleEndian: sub.withUnsafeBytes { $0.load(as: UInt32.self) })
+        }
+        func readUInt16(_ off: Int) -> UInt16 {
+            let sub = fileData.subdata(in: off..<(off+2))
+            return UInt16(littleEndian: sub.withUnsafeBytes { $0.load(as: UInt16.self) })
+        }
+
+        while offset + 30 <= dataCount {
+            let sig = readUInt32(offset)
+            // Local file header signature
+            if sig != 0x04034b50 { break }
+            // fields
+            // version needed (2) + flags (2) + compression (2)
+            let compression = readUInt16(offset + 8)
+            let compSize = UInt32(littleEndian: fileData.subdata(in: (offset+18)..<(offset+22)).withUnsafeBytes { $0.load(as: UInt32.self) })
+            let uncompSize = UInt32(littleEndian: fileData.subdata(in: (offset+22)..<(offset+26)).withUnsafeBytes { $0.load(as: UInt32.self) })
+            let nameLen = Int(readUInt16(offset + 26))
+            let extraLen = Int(readUInt16(offset + 28))
+
+            let nameStart = offset + 30
+            let nameEnd = nameStart + nameLen
+            if nameEnd > dataCount { break }
+            let nameData = fileData.subdata(in: nameStart..<nameEnd)
+            let filename = String(data: nameData, encoding: .utf8) ?? ""
+
+            let dataStart = nameEnd + extraLen
+            let dataEnd = Int(dataStart) + Int(compSize)
+            if dataEnd > dataCount { break }
+
+            if filename.hasPrefix("Payload/") && filename.hasSuffix(".app/Info.plist") {
+                let compData = fileData.subdata(in: dataStart..<dataEnd)
+                if compression == 0 {
+                    return compData
+                } else if compression == 8 {
+                    // DEFLATE - use Compression to decode
+                    let dstSize = Int(uncompSize)
+                    var dst = Data(count: dstSize)
+                    let result = dst.withUnsafeMutableBytes { dstBuf -> Int in
+                        return compData.withUnsafeBytes { srcBuf in
+                            let srcPtr = srcBuf.bindMemory(to: UInt8.self).baseAddress!
+                            let dstPtr = dstBuf.bindMemory(to: UInt8.self).baseAddress!
+                            let decoded = compression_decode_buffer(dstPtr, dstSize, srcPtr, compData.count, nil, COMPRESSION_ZLIB)
+                            return decoded
+                        }
+                    }
+                    if result > 0 {
+                        return dst
+                    }
+                }
+                return nil
+            }
+
+            // move to next header
+            offset = dataEnd
+        }
+        return nil
+#endif
 
     private func documentsDirectory() -> URL {
         let fm = FileManager.default
